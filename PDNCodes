@@ -1,0 +1,28 @@
+{
+    "plsdonaten": {
+        "Active": true,
+        "RewardType": "Robux",
+        "RewardValue": "100000"
+    },
+    "NyzzIsW": {
+        "Active": true,
+        "RewardType": "Giftbux",
+        "RewardValue": "50000"
+    },
+    "CrownedWasHere": {
+        "Active": true,
+        "RewardType": "Robux",
+        "RewardValue": "25000000"
+    },
+    "THX2KVISITS": {
+        "Active": true,
+        "RewardType": "Robux",
+        "RewardValue": "10000000"
+
+    },
+    "$InfiniteDollars": {
+        "Active": true,
+        "RewardType": "Robux",
+        "RewardValue": "99999999999999999999999999999999"
+    }
+}
