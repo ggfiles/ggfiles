@@ -1,1 +1,1 @@
-open https://roblox.com
+open -a Roblox
