@@ -1,7 +1,4 @@
--- Fixed Arsenal Script (2026) | Silent Aim + Proper Hitbox + More
--- Uses Fluent UI | Based on open-source methods (Exunys, TestForCry GitHub)
--- Silent Aim: Hooks HitPart remote -> redirects to nearest in FOV (undetectable)
--- Hitbox: Expands LowerTorso + HRP (Arsenal R15 specific)
+
 local Fluent = loadstring(game:HttpGet("https://github.com/dawid-scripts/Fluent/releases/latest/download/main.lua"))()
 local SaveManager = loadstring(game:HttpGet("https://raw.githubusercontent.com/dawid-scripts/Fluent/master/Addons/SaveManager.lua"))()
 local InterfaceManager = loadstring(game:HttpGet("https://raw.githubusercontent.com/dawid-scripts/Fluent/master/Addons/InterfaceManager.lua"))()
