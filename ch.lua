@@ -1,13 +1,15 @@
--- Simple Arsenal Features 2026 (Fluent UI)
--- Aimbot, ESP, Hitbox Expander, Fly, etc.
+-- Fixed Arsenal Script (2026) | Silent Aim + Proper Hitbox + More
+-- Uses Fluent UI | Based on open-source methods (Exunys, TestForCry GitHub)
+-- Silent Aim: Hooks HitPart remote -> redirects to nearest in FOV (undetectable)
+-- Hitbox: Expands LowerTorso + HRP (Arsenal R15 specific)
 
 local Fluent = loadstring(game:HttpGet("https://github.com/dawid-scripts/Fluent/releases/latest/download/main.lua"))()
 local SaveManager = loadstring(game:HttpGet("https://raw.githubusercontent.com/dawid-scripts/Fluent/master/Addons/SaveManager.lua"))()
 local InterfaceManager = loadstring(game:HttpGet("https://raw.githubusercontent.com/dawid-scripts/Fluent/master/Addons/InterfaceManager.lua"))()
 
 local Window = Fluent:CreateWindow({
-    Title = "Arsenal | Simple Features",
-    SubTitle = "by community",
+    Title = "arsenal",
+    SubTitle = "testing",
     TabWidth = 160,
     Size = UDim2.fromOffset(580, 460),
     Acrylic = true,
@@ -33,19 +35,18 @@ local LocalPlayer = Players.LocalPlayer
 
 -- Settings
 local Settings = {
-    Aimbot = false,
-    AimbotPart = "Head",
-    AimbotSmooth = 0.12,
-    FOV = 180,
+    SilentAim = false,
+    AimPart = "Head",
+    FOV = 150,
     TeamCheck = true,
-    VisibleCheck = true,
+    VisibleCheck = false,  -- Less strict for silent
     
     ESP = false,
-    Tracers = false,
-    Boxes = false,
+    Boxes = true,
+    Tracers = true,
     
     HitboxExpander = false,
-    HitboxSize = 8,
+    HitboxSize = 25,  -- 25-30 good for Arsenal
     
     Fly = false,
     FlySpeed = 60,
@@ -54,157 +55,224 @@ local Settings = {
     InfiniteJump = false
 }
 
+-- Globals for hook
+local oldNamecall
 local ESP_Objects = {}
-local FlyBodyVelocity = nil
-local FlyConnection = nil
+local FlyBodyVelocity, FlyConnection
+local HitboxConnection
+local ESPConnection
 
--- ──────────────────────────────────────────────────────────────
---    BASIC UTILITY FUNCTIONS
--- ──────────────────────────────────────────────────────────────
+-- FOV Circle (optional visual)
+local ScreenGui = Instance.new("ScreenGui", LocalPlayer.PlayerGui)
+ScreenGui.Name = "FOVGui"
+ScreenGui.ResetOnSpawn = false
+local FOVCircle = Drawing.new("Circle")
+FOVCircle.Radius = Settings.FOV
+FOVCircle.Position = Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y / 2)
+FOVCircle.Color = Color3.fromRGB(255, 0, 0)
+FOVCircle.Thickness = 2
+FOVCircle.NumSides = 64
+FOVCircle.Filled = false
+FOVCircle.Transparency = 0.7
+FOVCircle.Visible = false
 
-local function GetNearest()
-    local closest, dist = nil, Settings.FOV
+-- Get nearest to center screen (for silent aim FOV)
+local function GetNearestInFOV()
+    local closest, shortestDist = nil, Settings.FOV
+    
+    local mousePos = Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y / 2)  -- Center for FOV aim
     
     for _, player in Players:GetPlayers() do
         if player == LocalPlayer then continue end
         if Settings.TeamCheck and player.Team == LocalPlayer.Team then continue end
         
         local char = player.Character
-        if not char then continue end
+        if not (char and char:FindFirstChild("HumanoidRootPart") and char:FindFirstChild("Humanoid")) then continue end
+        if char.Humanoid.Health <= 0 then continue end
         
-        local humanoid = char:FindFirstChildOfClass("Humanoid")
-        local root = char:FindFirstChild("HumanoidRootPart")
-        if not (humanoid and root and humanoid.Health > 0) then continue end
-        
-        local screen, onScreen = Camera:WorldToViewportPoint(root.Position)
-        if not onScreen then continue end
-        
-        local screenDist = (Vector2.new(screen.X, screen.Y) - Camera.ViewportSize/2).Magnitude
-        if screenDist < dist then
-            dist = screenDist
-            closest = player
+        local rootPos, onScreen = Camera:WorldToViewportPoint(char.HumanoidRootPart.Position)
+        if onScreen then
+            local screenDist = (Vector2.new(rootPos.X, rootPos.Y) - mousePos).Magnitude
+            if screenDist < shortestDist then
+                if Settings.VisibleCheck then
+                    -- Quick raycast visible check
+                    local origin = Camera.CFrame.Position
+                    local direction = (char.HumanoidRootPart.Position - origin).Unit * 1000
+                    local rayParams = RaycastParams.new()
+                    rayParams.FilterType = Enum.RaycastFilterType.Blacklist
+                    rayParams.FilterDescendantsInstances = {LocalPlayer.Character}
+                    local result = workspace:Raycast(origin, direction, rayParams)
+                    if result and result.Instance:IsDescendantOf(char) then
+                        shortestDist = screenDist
+                        closest = player
+                    end
+                else
+                    shortestDist = screenDist
+                    closest = player
+                end
+            end
         end
     end
-    
     return closest
 end
 
-local function IsVisible(target)
-    if not target then return false end
-    local part = target.Character and target.Character:FindFirstChild(Settings.AimbotPart)
-    if not part then return false end
+-- SILENT AIM HOOK (Arsenal HitPart method from open-source)
+local function InitSilentAim()
+    local mt = getrawmetatable(game)
+    oldNamecall = mt.__namecall
+    setreadonly(mt, false)
     
-    local origin = Camera.CFrame.Position
-    local dir = (part.Position - origin)
-    local rayParams = RaycastParams.new()
-    rayParams.FilterDescendantsInstances = {LocalPlayer.Character}
-    rayParams.FilterType = Enum.RaycastFilterType.Exclude
+    mt.__namecall = newcclosure(function(self, ...)
+        local args = {...}
+        local method = getnamecallmethod()
+        
+        if Settings.SilentAim and method == "FireServer" and tostring(self) == "HitPart" then
+            local target = GetNearestInFOV()
+            if target and target.Character then
+                local aimPartObj = target.Character:FindFirstChild(Settings.AimPart)
+                if aimPartObj then
+                    args[1] = aimPartObj  -- Part
+                    args[2] = aimPartObj.Position  -- Position
+                end
+            end
+        end
+        
+        return oldNamecall(self, unpack(args))
+    end)
     
-    local result = workspace:Raycast(origin, dir * 2, rayParams)
-    return result and result.Instance and result.Instance:IsDescendantOf(target.Character)
+    setreadonly(mt, true)
 end
 
--- ──────────────────────────────────────────────────────────────
---    AIMBOT
--- ──────────────────────────────────────────────────────────────
+local function ToggleSilentAim(state)
+    Settings.SilentAim = state
+    if state then
+        InitSilentAim()
+    end
+    -- Note: Hook stays, but only activates if enabled
+end
 
-local aimConnection
+-- HITBOX EXPANDER (Fixed for Arsenal: LowerTorso + HRP)
+local function UpdateHitboxes()
+    for _, player in Players:GetPlayers() do
+        if player == LocalPlayer or not player.Character then continue end
+        if Settings.TeamCheck and player.Team == LocalPlayer.Team then
+            -- Revert teammates
+            local lower = player.Character:FindFirstChild("LowerTorso")
+            local hrp = player.Character:FindFirstChild("HumanoidRootPart")
+            if lower then
+                lower.Size = Vector3.new(2, 0.4, 1)
+                lower.CanCollide = true
+                lower.Transparency = 0
+            end
+            if hrp then
+                hrp.Size = Vector3.new(2, 2, 1)
+                hrp.CanCollide = false
+                hrp.Transparency = 1
+            end
+        else
+            -- Expand enemies
+            local lower = player.Character:FindFirstChild("LowerTorso")
+            local hrp = player.Character:FindFirstChild("HumanoidRootPart")
+            if lower then
+                lower.Size = Vector3.new(Settings.HitboxSize, Settings.HitboxSize, Settings.HitboxSize)
+                lower.CanCollide = false
+                lower.Transparency = 0.8  -- Semi-visible
+            end
+            if hrp then
+                hrp.Size = Vector3.new(Settings.HitboxSize, Settings.HitboxSize, Settings.HitboxSize)
+                hrp.CanCollide = false
+                hrp.Transparency = 1  -- Invisible
+            end
+        end
+    end
+end
 
-local function ToggleAimbot(state)
-    if aimConnection then aimConnection:Disconnect() aimConnection = nil end
+local function ToggleHitbox(state)
+    Settings.HitboxExpander = state
+    if HitboxConnection then HitboxConnection:Disconnect() end
     
     if state then
-        aimConnection = RunService.RenderStepped:Connect(function()
-            if not Settings.Aimbot then return end
-            
-            local target = GetNearest()
-            if not target then return end
-            
-            local part = target.Character and target.Character:FindFirstChild(Settings.AimbotPart)
-            if not part then return end
-            
-            if Settings.VisibleCheck and not IsVisible(target) then return end
-            
-            local goal = CFrame.new(Camera.CFrame.Position, part.Position)
-            Camera.CFrame = Camera.CFrame:Lerp(goal, Settings.AimbotSmooth)
+        UpdateHitboxes()  -- Initial
+        HitboxConnection = RunService.Heartbeat:Connect(function()
+            UpdateHitboxes()
+        end)
+        
+        -- New players
+        Players.PlayerAdded:Connect(function(p)
+            p.CharacterAdded:Connect(function()
+                task.wait(1)  -- Wait load
+                UpdateHitboxes()
+            end)
         end)
     end
 end
 
--- ──────────────────────────────────────────────────────────────
---    ESP
--- ──────────────────────────────────────────────────────────────
-
-local function UpdateESP()
-    for player, drawings in pairs(ESP_Objects) do
-        local box, tracer = drawings.box, drawings.tracer
-        
-        local char = player.Character
-        if not char or not char:FindFirstChild("HumanoidRootPart") or not char:FindFirstChild("Head") then
-            box.Visible = false
-            tracer.Visible = false
-            continue
-        end
-        
-        local root = char.HumanoidRootPart
-        local hum = char:FindFirstChildOfClass("Humanoid")
-        if hum.Health <= 0 then
-            box.Visible = false
-            tracer.Visible = false
-            continue
-        end
-        
-        local rootPos, onScreen = Camera:WorldToViewportPoint(root.Position)
-        if not onScreen then
-            box.Visible = false
-            tracer.Visible = false
-            continue
-        end
-        
-        local headPos = Camera:WorldToViewportPoint(char.Head.Position + Vector3.new(0,0.6,0))
-        local legPos = Camera:WorldToViewportPoint(root.Position - Vector3.new(0,3.5,0))
-        
-        local height = math.abs(headPos.Y - legPos.Y)
-        local width = height * 0.55
-        
-        box.Size = Vector2.new(width, height)
-        box.Position = Vector2.new(rootPos.X - width/2, headPos.Y)
-        box.Visible = Settings.Boxes
-        
-        tracer.From = Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y)
-        tracer.To = Vector2.new(rootPos.X, rootPos.Y)
-        tracer.Visible = Settings.Tracers
-    end
-end
-
+-- ESP (same as before, improved)
 local function CreateESP(player)
     if player == LocalPlayer then return end
     
     local box = Drawing.new("Square")
-    box.Thickness = 1.4
-    box.Color = Color3.fromRGB(255, 80, 80)
+    box.Thickness = 2
+    box.Color = Color3.fromRGB(255, 0, 0)
     box.Filled = false
-    box.Transparency = 0.95
+    box.Transparency = 1
+    box.Visible = false
     
     local tracer = Drawing.new("Line")
-    tracer.Thickness = 1.3
-    tracer.Color = Color3.fromRGB(255, 80, 80)
-    tracer.Transparency = 0.9
+    tracer.Thickness = 2
+    tracer.Color = Color3.fromRGB(255, 0, 0)
+    tracer.Transparency = 1
+    tracer.Visible = false
     
     ESP_Objects[player] = {box = box, tracer = tracer}
 end
 
+local function UpdateESP()
+    for player, drawings in pairs(ESP_Objects) do
+        local char = player.Character
+        if not char or not char:FindFirstChild("HumanoidRootPart") or not char:FindFirstChild("Head") then
+            drawings.box.Visible = false
+            drawings.tracer.Visible = false
+            return
+        end
+        local hum = char:FindFirstChildOfClass("Humanoid")
+        if not hum or hum.Health <= 0 then
+            drawings.box.Visible = false
+            drawings.tracer.Visible = false
+            return
+        end
+        
+        local rootPos, onScreen = Camera:WorldToViewportPoint(char.HumanoidRootPart.Position)
+        if not onScreen then
+            drawings.box.Visible = false
+            drawings.tracer.Visible = false
+            return
+        end
+        
+        local headPos = Camera:WorldToViewportPoint(char.Head.Position + Vector3.new(0, 0.5, 0))
+        local legPos = Camera:WorldToViewportPoint(char.HumanoidRootPart.Position - Vector3.new(0, 4, 0))
+        local height = math.abs(legPos.Y - headPos.Y)
+        local width = height / 2.2
+        
+        drawings.box.Size = Vector2.new(width, height)
+        drawings.box.Position = Vector2.new(rootPos.X - width / 2, headPos.Y)
+        drawings.box.Visible = Settings.ESP and Settings.Boxes
+        
+        drawings.tracer.From = Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y * 0.9)
+        drawings.tracer.To = Vector2.new(rootPos.X, rootPos.Y)
+        drawings.tracer.Visible = Settings.ESP and Settings.Tracers
+    end
+end
+
 local function ToggleESP(state)
+    Settings.ESP = state
+    if ESPConnection then ESPConnection:Disconnect() end
     if state then
         for _, p in Players:GetPlayers() do CreateESP(p) end
-        
-        Players.PlayerAdded:Connect(function(p)
-            p.CharacterAdded:Connect(function() CreateESP(p) end)
-        end)
-        
-        RunService.RenderStepped:Connect(UpdateESP)
+        Players.PlayerAdded:Connect(function(p) p.CharacterAdded:Connect(function() CreateESP(p) end) end)
+        ESPConnection = RunService.RenderStepped:Connect(UpdateESP)
     else
-        for _, drawings in pairs(ESP_Objects) do
+        for _, drawings in ESP_Objects do
             drawings.box:Remove()
             drawings.tracer:Remove()
         end
@@ -212,82 +280,44 @@ local function ToggleESP(state)
     end
 end
 
--- ──────────────────────────────────────────────────────────────
---    HITBOX EXPANDER
--- ──────────────────────────────────────────────────────────────
-
-local function UpdateHitboxes()
-    for _, player in Players:GetPlayers() do
-        if player == LocalPlayer then continue end
-        if Settings.TeamCheck and player.Team == LocalPlayer.Team then continue end
-        
-        local char = player.Character
-        if not char then continue end
-        
-        local head = char:FindFirstChild("Head")
-        if head then
-            if Settings.HitboxExpander then
-                head.Size = Vector3.new(Settings.HitboxSize, Settings.HitboxSize, Settings.HitboxSize)
-                head.Transparency = 0.65
-                head.CanCollide = false
-            else
-                head.Size = Vector3.new(1.2, 1.2, 1.2) -- Arsenal default-ish
-                head.Transparency = 0
-                head.CanCollide = true
-            end
-        end
-    end
-end
-
--- ──────────────────────────────────────────────────────────────
---    FLY + NOCLIP + INF JUMP
--- ──────────────────────────────────────────────────────────────
-
+-- Movement (same)
 local function ToggleFly(state)
     Settings.Fly = state
-    
     if FlyConnection then FlyConnection:Disconnect() FlyConnection = nil end
-    if FlyBodyVelocity then FlyBodyVelocity:Destroy() FlyBodyVelocity = nil end
+    if FlyBodyVelocity then FlyBodyVelocity:Destroy() end
     
-    if state and LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart") then
-        local hrp = LocalPlayer.Character.HumanoidRootPart
-        
-        FlyBodyVelocity = Instance.new("BodyVelocity")
-        FlyBodyVelocity.MaxForce = Vector3.new(1e6, 1e6, 1e6)
-        FlyBodyVelocity.Velocity = Vector3.zero
-        FlyBodyVelocity.Parent = hrp
-        
-        FlyConnection = RunService.Heartbeat:Connect(function()
-            if not Settings.Fly then return end
+    if state and LocalPlayer.Character then
+        local hrp = LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
+        if hrp then
+            FlyBodyVelocity = Instance.new("BodyVelocity")
+            FlyBodyVelocity.MaxForce = Vector3.new(4000, 4000, 4000)
+            FlyBodyVelocity.Velocity = Vector3.new()
+            FlyBodyVelocity.Parent = hrp
             
-            local move = Vector3.zero
-            local cam = workspace.CurrentCamera.CFrame
-            
-            if UserInputService:IsKeyDown(Enum.KeyCode.W)    then move += cam.LookVector end
-            if UserInputService:IsKeyDown(Enum.KeyCode.S)    then move -= cam.LookVector end
-            if UserInputService:IsKeyDown(Enum.KeyCode.A)    then move -= cam.RightVector end
-            if UserInputService:IsKeyDown(Enum.KeyCode.D)    then move += cam.RightVector end
-            if UserInputService:IsKeyDown(Enum.KeyCode.Space) then move += Vector3.new(0,1,0) end
-            if UserInputService:IsKeyDown(Enum.KeyCode.LeftControl) then move -= Vector3.new(0,1,0) end
-            
-            FlyBodyVelocity.Velocity = move.Magnitude > 0 and move.Unit * Settings.FlySpeed or Vector3.zero
-        end)
+            FlyConnection = RunService.Heartbeat:Connect(function()
+                local move = Vector3.new()
+                local camCf = Camera.CFrame
+                if UserInputService:IsKeyDown(Enum.KeyCode.W) then move = move + camCf.LookVector end
+                if UserInputService:IsKeyDown(Enum.KeyCode.S) then move = move - camCf.LookVector end
+                if UserInputService:IsKeyDown(Enum.KeyCode.A) then move = move - camCf.RightVector end
+                if UserInputService:IsKeyDown(Enum.KeyCode.D) then move = move + camCf.RightVector end
+                if UserInputService:IsKeyDown(Enum.KeyCode.Space) then move = move + Vector3.new(0,1,0) end
+                if UserInputService:IsKeyDown(Enum.KeyCode.LeftControl) then move = move - Vector3.new(0,1,0) end
+                FlyBodyVelocity.Velocity = move.Unit * Settings.FlySpeed
+            end)
+        end
     end
 end
 
 local noclipConn
 local function ToggleNoClip(state)
     Settings.NoClip = state
-    
-    if noclipConn then noclipConn:Disconnect() noclipConn = nil end
-    
+    if noclipConn then noclipConn:Disconnect() end
     if state then
         noclipConn = RunService.Stepped:Connect(function()
             if LocalPlayer.Character then
-                for _, part in LocalPlayer.Character:GetDescendants() do
-                    if part:IsA("BasePart") then
-                        part.CanCollide = false
-                    end
+                for _, part in LocalPlayer.Character:GetChildren() do
+                    if part:IsA("BasePart") then part.CanCollide = false end
                 end
             end
         end)
@@ -295,158 +325,74 @@ local function ToggleNoClip(state)
 end
 
 local infJumpConn
-local function ToggleInfiniteJump(state)
+local function ToggleInfJump(state)
     Settings.InfiniteJump = state
-    
-    if state and not infJumpConn then
+    if infJumpConn then infJumpConn:Disconnect() end
+    if state then
         infJumpConn = UserInputService.JumpRequest:Connect(function()
-            if Settings.InfiniteJump and LocalPlayer.Character then
-                LocalPlayer.Character.Humanoid:ChangeState("Jumping")
-            end
+            LocalPlayer.Character.Humanoid:ChangeState(Enum.HumanoidStateType.Jumping)
         end)
     end
 end
 
--- ──────────────────────────────────────────────────────────────
---    UI ELEMENTS
--- ──────────────────────────────────────────────────────────────
-
-do -- Combat Tab
-    local Section = Tabs.Combat:AddSection("Aimbot")
-    
-    Section:AddToggle("AimbotToggle", {
-        Title = "Enable Aimbot",
-        Default = false,
-        Callback = function(v) Settings.Aimbot = v ToggleAimbot(v) end
+-- UI
+do  -- Combat
+    local Sec = Tabs.Combat:AddSection("Silent Aim (Fixed)")
+    Sec:AddToggle("SilentAim", {Title = "Silent Aim", Default = false, Callback = ToggleSilentAim})
+    Sec:AddToggle("TeamCheck", {Title = "Team Check", Default = true, Callback = function(v) Settings.TeamCheck = v end})
+    Sec:AddToggle("VisibleCheck", {Title = "Visible Only", Default = false, Callback = function(v) Settings.VisibleCheck = v end})
+    Sec:AddDropdown("AimPart", {
+        Title = "Aim Part", Values = {"Head", "UpperTorso", "LowerTorso", "HumanoidRootPart"},
+        Default = "Head", Callback = function(v) Settings.AimPart = v end
     })
-    
-    Section:AddToggle("TeamCheck", {
-        Title = "Team Check",
-        Default = true,
-        Callback = function(v) Settings.TeamCheck = v end
-    })
-    
-    Section:AddToggle("VisibleCheck", {
-        Title = "Visible Check",
-        Default = true,
-        Callback = function(v) Settings.VisibleCheck = v end
-    })
-    
-    Section:AddSlider("Smoothness", {
-        Title = "Smoothness",
-        Description = "Lower = faster",
-        Default = 12,
-        Min = 5,
-        Max = 40,
-        Rounding = 1,
-        Callback = function(v) Settings.AimbotSmooth = v/100 end
-    })
-    
-    Section:AddSlider("FOV", {
-        Title = "Field of View",
-        Default = 180,
-        Min = 50,
-        Max = 400,
-        Rounding = 0,
-        Callback = function(v) Settings.FOV = v end
-    })
+    Sec:AddSlider("FOV", {Title = "FOV Radius", Default = 150, Min = 50, Max = 300, Callback = function(v)
+        Settings.FOV = v
+        FOVCircle.Radius = v
+    end})
+    Sec:AddToggle("ShowFOV", {Title = "Show FOV Circle", Default = false, Callback = function(v)
+        FOVCircle.Visible = v
+        if ESPConnection then FOVCircle.Visible = v end  -- Update in loop if needed
+    end})
 end
 
-do -- Visual Tab
-    local Section = Tabs.Visual:AddSection("ESP")
-    
-    Section:AddToggle("ESPBoxes", {
-        Title = "Boxes",
-        Default = false,
-        Callback = function(v) Settings.Boxes = v end
-    })
-    
-    Section:AddToggle("ESPTracers", {
-        Title = "Tracers",
-        Default = false,
-        Callback = function(v) Settings.Tracers = v end
-    })
-    
-    local ESPToggle = Section:AddToggle("ESP", {
-        Title = "Enable ESP",
-        Default = false,
-        Callback = ToggleESP
-    })
-    
-    local HitboxSec = Tabs.Visual:AddSection("Hitbox Expander")
-    
-    HitboxSec:AddToggle("Hitbox", {
-        Title = "Enable Hitbox Expander",
-        Default = false,
-        Callback = function(v)
-            Settings.HitboxExpander = v
-            if v then UpdateHitboxes() end
-        end
-    })
-    
-    HitboxSec:AddSlider("HitboxSize", {
-        Title = "Size",
-        Default = 8,
-        Min = 4,
-        Max = 18,
-        Rounding = 1,
-        Callback = function(v)
-            Settings.HitboxSize = v
-            if Settings.HitboxExpander then UpdateHitboxes() end
-        end
-    })
+do  -- Visual
+    local Sec = Tabs.Visual:AddSection("ESP")
+    Sec:AddToggle("ESP", {Title = "Enable ESP", Default = false, Callback = ToggleESP})
+    Sec:AddToggle("Boxes", {Title = "Boxes", Default = true, Callback = function(v) Settings.Boxes = v end})
+    Sec:AddToggle("Tracers", {Title = "Tracers", Default = true, Callback = function(v) Settings.Tracers = v end})
 end
 
-do -- Movement Tab
-    local Section = Tabs.Movement:AddSection("Movement")
-    
-    Section:AddToggle("Fly", {
-        Title = "Fly",
-        Default = false,
-        Callback = ToggleFly
-    })
-    
-    Section:AddSlider("FlySpeed", {
-        Title = "Fly Speed",
-        Default = 60,
-        Min = 30,
-        Max = 180,
-        Rounding = 0,
-        Callback = function(v) Settings.FlySpeed = v end
-    })
-    
-    Section:AddToggle("NoClip", {
-        Title = "NoClip",
-        Default = false,
-        Callback = ToggleNoClip
-    })
-    
-    Section:AddToggle("InfJump", {
-        Title = "Infinite Jump",
-        Default = false,
-        Callback = ToggleInfiniteJump
-    })
+do  -- Movement
+    local Sec = Tabs.Movement:AddSection("Movement")
+    Sec:AddToggle("Fly", {Title = "Fly (WASD Space Ctrl)", Default = false, Callback = ToggleFly})
+    Sec:AddSlider("FlySpeed", {Title = "Speed", Default = 60, Min = 16, Max = 200, Callback = function(v) Settings.FlySpeed = v end})
+    Sec:AddToggle("NoClip", {Title = "NoClip", Default = false, Callback = ToggleNoClip})
+    Sec:AddToggle("InfJump", {Title = "Infinite Jump", Default = false, Callback = ToggleInfJump})
 end
 
--- Auto update hitboxes when new players spawn
-Players.PlayerAdded:Connect(function(p)
-    p.CharacterAdded:Connect(function()
-        task.wait(0.4)
-        if Settings.HitboxExpander then UpdateHitboxes() end
-        if Settings.ESP then CreateESP(p) end
-    end)
+do  -- Misc (Hitbox Fixed!)
+    local Sec = Tabs.Misc:AddSection("Hitbox Expander (Fixed)")
+    Sec:AddToggle("Hitbox", {Title = "Enable (LowerTorso + HRP)", Default = false, Callback = ToggleHitbox})
+    Sec:AddSlider("Size", {Title = "Size (20-30)", Default = 25, Min = 10, Max = 40, Rounding = 1, Callback = function(v)
+        Settings.HitboxSize = v
+    end})
+end
+
+-- Init ESP objs for existing
+for _, p in Players:GetPlayers() do CreateESP(p) end
+
+-- FOV Update
+RunService.RenderStepped:Connect(function()
+    FOVCircle.Position = Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y / 2)
 end)
 
--- Initial load
-task.spawn(function()
-    task.wait(1.5)
-    if Settings.HitboxExpander then UpdateHitboxes() end
-end)
+-- Auto-update hitbox on respawn
+LocalPlayer.CharacterAdded:Connect(function() task.wait(1) if Settings.HitboxExpander then UpdateHitboxes() end end)
 
 Fluent:Notify({
-    Title = "Loaded",
-    Content = "Simple Arsenal features loaded\nPress RightShift to open/close",
-    Duration = 5
+    Title = "Fixed!",
+    Content = "Silent Aim (HitPart hook) + Arsenal Hitbox (Torso/HRP)\nBased on GitHub open-source (TestForCry, Exunys)",
+    Duration = 6
 })
 
-print("Simple Arsenal script loaded - RightShift to toggle UI")
+print("loaded / rightshift toggle")
